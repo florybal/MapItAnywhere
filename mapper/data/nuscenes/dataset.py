@@ -16,6 +16,72 @@ from ..utils import decompose_rotmat
 from ...utils.io import read_image
 from ...utils.wrappers import Camera
 from ..schema import NuScenesDataConfiguration
+from nuscenes.map_expansion.map_api import NuScenesMap
+import math
+
+
+def _quat_to_yaw_deg(self, q):
+    # q: [w, x, y, z] do nuScenes (lista) -> yaw em graus
+    # nuScenes guarda como [w, x, y, z]; pyquaternion aceita nessa ordem.
+    R = Quaternion(q).rotation_matrix
+    yaw = math.atan2(R[1, 0], R[0, 0])  # z-rotation
+    return math.degrees(yaw)
+
+def _render_map_mask(self, location, center_xy, yaw_deg, canvas_hw=(800, 800),
+                     patch_size_m=100.0, layer_names=None):
+    """
+    Rasteriza camadas do mapa (nuScenes devkit) para um stack binário [H, W, C].
+    - center_xy: (x, y) global (metros)
+    - yaw_deg: orientação do carro em graus (global->ego)
+    - canvas_hw: (H, W) da saída
+    - patch_size_m: lado do quadrado em metros
+    - layer_names: lista de camadas semânticas do nuScenes
+    """
+    if layer_names is None:
+        # escolha enxuta; ajuste conforme suas classes/treino
+        layer_names = [
+            "drivable_area",
+            "ped_crossing",
+            "walkway",
+            "carpark_area",
+            "road_segment",         # alternativa à 'drivable_area' p/ vias
+            "lane"                  # opcional; remova/ajuste conforme classes
+        ]
+    H, W = canvas_hw
+    nusc_map = NuScenesMap(self.nusc.dataroot, location=location)
+
+    # patch_box: (cx, cy, width, height) em METROS no frame global
+    patch_box = (center_xy[0], center_xy[1], patch_size_m, patch_size_m)
+
+    # get_map_mask retorna (layers, H, W) ou (H, W, layers) dependendo da versão;
+    # vamos padronizar para (H, W, C)
+    mask = nusc_map.get_map_mask(
+        patch_box=patch_box,
+        patch_angle=yaw_deg,             # alinha com o heading do veículo
+        layer_names=layer_names,
+        canvas_size=(H, W)
+    )
+    # normalizar shape → (H, W, C)
+    import numpy as np
+    if isinstance(mask, list):  # versões antigas
+        mask = np.stack(mask, axis=-1).astype(np.uint8)
+    else:
+        # algumas versões retornam (C, H, W)
+        if mask.ndim == 3 and mask.shape[0] == len(layer_names):
+            mask = np.transpose(mask, (1, 2, 0)).astype(np.uint8)
+        else:
+            mask = mask.astype(np.uint8)
+
+    # clipe binário {0,1}
+    mask = (mask > 0).astype(np.uint8)
+
+    # canal de "visibility"/confiança: 1 onde há informação
+    vis = (mask.sum(axis=-1, keepdims=True) > 0).astype(np.uint8)
+
+    # Empilha [C] + [vis] → total C+1 (o código depois espera “+1” para flood/visibility)
+    out = np.concatenate([mask, vis], axis=-1)
+    return out  # (H, W, C+1), values {0,1}
+
 
 
 class NuScenesDataset(torch.utils.data.Dataset):
@@ -146,9 +212,27 @@ class NuScenesDataset(torch.utils.data.Dataset):
         roll = d['roll']
         pitch = d['pitch']
         yaw = d['yaw']
-
-        with Image.open(self.map_data_root / f"{d['token']}.png") as semantic_image:
-            semantic_mask = to_tensor(semantic_image)
+        
+        p = self.map_data_root / f"{d['token']}.png"
+    
+        if p.exists():
+           with Image.open(p) as semantic_image:
+               semantic_mask = to_tensor(semantic_image)
+        else:
+           # Fallback: gera máscara on-the-fly com nuScenes devkit
+           # escolha um canvas compatível com sua head (ajuste se quiser)
+           canvas_hw = (800, 800)  # (H, W)
+           yaw_deg = self._quat_to_yaw_deg(self.nusc.get('ego_pose', self.nusc.get('sample_data', d['token'])['ego_pose_token'])['rotation'])
+           m = self._render_map_mask(
+               location=d['location'],
+               center_xy=(d['sensor2global'][0, 3], d['sensor2global'][1, 3]),
+               yaw_deg=yaw_deg,
+               canvas_hw=canvas_hw,
+               patch_size_m=100.0,    # ajuste se quiser mais/menos alcance
+               layer_names=None       # ou passe sua lista
+           )
+           # (H, W, C+1) → (C+1, H, W) como to_tensor
+           semantic_mask = torch.from_numpy(np.ascontiguousarray(m)).permute(2, 0, 1).float()
 
         semantic_mask = decode_binary_labels(semantic_mask, self.cfg.num_classes + 1)
         semantic_mask = torch.nn.functional.max_pool2d(semantic_mask.float(), (2, 2), stride=2) # 2 times downsample
@@ -205,3 +289,4 @@ class NuScenesDataset(torch.utils.data.Dataset):
             "confidence_map": confidence_map,
             'name': d['sample_token']
         }
+

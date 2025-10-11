@@ -131,6 +131,9 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Pesos
+weigthts/
+
 # Environments
 .env
 .venv

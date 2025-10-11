@@ -82,7 +82,16 @@ def load_map_data(dataroot, location):
 
         
         # Store as an R-Tree for fast intersection queries
-        map_data[layer] = STRtree(polygons)
+        tree = STRtree(polygons)
+        # Some Shapely versions return integer indices from STRtree.query().
+        # Attach the original polygon list to the tree so callers can recover
+        # the geometry when an index is returned.
+        try:
+            tree._input_polygons = polygons
+        except Exception:
+            # best-effort: if we can't attach, continue — callers will try other fallbacks
+            pass
+        map_data[layer] = tree
     
     return map_data
 
@@ -118,11 +127,29 @@ def get_layer_mask(nuscenes, polygons, sample_data, extents, resolution):
     mask = np.zeros((int((z2 - z1) / resolution), int((x2 - x1) / resolution)),
                     dtype=np.uint8)
 
-    # Find all polygons which intersect with the area of interest
-    for polygon in polygons.query(map_patch):
+    # Find all polygons which intersect with the area of interest. STRtree.query
+    # may return geometry objects or integer indices depending on Shapely version.
+    for hit in polygons.query(map_patch):
+        polygon = hit
+        # Resolve integer indices to actual geometries when needed
+        if isinstance(polygon, (int, np.integer)):
+            if hasattr(polygons, '_input_polygons'):
+                polygon = polygons._input_polygons[int(polygon)]
+            elif hasattr(polygons, 'geometries'):
+                # Some STRtree implementations expose geometries
+                polygon = polygons.geometries[int(polygon)]
+            else:
+                # Can't resolve the index -> skip
+                continue
 
+        if polygon is None:
+            continue
+
+        # Intersect with the query patch and skip empty results
         polygon = polygon.intersection(map_patch)
-        
+        if polygon.is_empty:
+            continue
+
         # Transform into map coordinates
         polygon = transform_polygon(polygon, inv_tfm)
 
@@ -162,7 +189,8 @@ def get_object_masks(nuscenes, sample_data, extents, resolution):
         # Render the rotated bounding box to the mask
         render_polygon(masks[class_id], local_bbox, extents, resolution)
     
-    return masks.astype(np.bool)
+    # Return boolean mask (avoid deprecated np.bool alias)
+    return masks.astype(bool)
 
 
 def get_sensor_transform(nuscenes, sample_data):
@@ -199,7 +227,14 @@ def make_transform_matrix(record):
 
 def render_shapely_polygon(mask, polygon, extents, resolution):
 
-    if polygon.geom_type == 'Polygon':
+    # Defensive: skip empty geometries
+    if polygon is None:
+        return
+    if getattr(polygon, 'is_empty', False):
+        return
+
+    # If this is a simple polygon, render normally
+    if getattr(polygon, 'geom_type', None) == 'Polygon':
 
         # Render exteriors
         render_polygon(mask, polygon.exterior.coords, extents, resolution, 1)
@@ -207,8 +242,17 @@ def render_shapely_polygon(mask, polygon, extents, resolution):
         # Render interiors
         for hole in polygon.interiors:
             render_polygon(mask, hole.coords, extents, resolution, 0)
-    
-    # Handle the case of compound shapes
-    else:
-        for poly in polygon:
+        return
+
+    # Handle compound shapes (MultiPolygon, GeometryCollection)
+    try:
+        for poly in polygon.geoms:
             render_shapely_polygon(mask, poly, extents, resolution)
+    except Exception:
+        # Fallback: try iteration (some objects are iterable)
+        try:
+            for poly in polygon:
+                render_shapely_polygon(mask, poly, extents, resolution)
+        except Exception:
+            # Unknown geometry type — skip
+            return

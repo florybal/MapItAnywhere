@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import torchmetrics
 import torchmetrics.classification
 
@@ -12,12 +13,32 @@ class PixelAccuracy(torchmetrics.Metric):
                        dist_reduce_fx="sum")
 
     def update(self, pred, data):
-        output_mask = pred['output'] > 0.5
-        gt_mask = data["seg_masks"].permute(0, 3, 1, 2)
-        self.correct_pixels += (
-            (output_mask == gt_mask).sum()
-        )
-        self.total_pixels += torch.numel(pred["valid_bev"][..., :-1])
+        # Normalize GT to NCHW
+        gt = data["seg_masks"]
+        # If GT is NHWC (last dim == channel count), convert to NCHW
+        if gt.ndim == 4 and gt.shape[-1] == pred['output'].shape[1]:
+            gt = gt.permute(0, 3, 1, 2)
+
+        pred_out = pred['output']
+        # Ensure pred_out is NCHW
+        if pred_out.ndim == 4 and pred_out.shape[1] != gt.shape[1]:
+            # If pred_out is NHWC (last dim == channel count), convert to NCHW
+            if pred_out.shape[-1] == gt.shape[1]:
+                pred_out = pred_out.permute(0, 3, 1, 2)
+
+        # Resize pred to GT size if needed
+        if pred_out.shape[2:] != gt.shape[2:]:
+            pred_out = F.interpolate(pred_out, size=gt.shape[2:], mode='bilinear', align_corners=False)
+
+        output_mask = pred_out > 0.5
+        gt_mask = gt
+
+        # Compare only the semantic channels (exclude visibility/extra channel if present)
+        if gt_mask.shape[1] > output_mask.shape[1]:
+            gt_mask = gt_mask[:, :output_mask.shape[1]]
+
+        self.correct_pixels += ((output_mask == gt_mask).sum())
+        self.total_pixels += gt_mask.numel()
 
     def compute(self):
         return self.correct_pixels / self.total_pixels
@@ -38,42 +59,85 @@ class IOU(torchmetrics.Metric):
 
         gt = data["seg_masks"]
         pred = output['output']
+        # Normalize GT to NCHW (batch, classes, H, W)
+        # If GT is NHWC (last dim == channel count), convert to NCHW
+        if gt.ndim == 4 and gt.shape[-1] == pred.shape[1]:
+            gt = gt.permute(0, 3, 1, 2)
 
-        if "confidence_map" in data:
-            observable_mask = torch.logical_and(
-                output["valid_bev"][..., :-1], data["confidence_map"] == 0)
-            non_observable_mask = torch.logical_and(
-                output["valid_bev"][..., :-1], data["confidence_map"] == 1)
+        # Ensure pred is float and has shape NCHW
+        if pred.ndim == 4 and pred.shape[1] != gt.shape[1]:
+            # If pred was NHWC, convert
+            if pred.shape[-1] == gt.shape[1]:
+                pred = pred.permute(0, 3, 1, 2)
+
+        # Resize pred to GT spatial resolution if needed
+        if pred.shape[2:] != gt.shape[2:]:
+            pred = F.interpolate(pred, size=gt.shape[2:], mode='bilinear', align_corners=False)
+
+        # Build a spatial valid mask from output['valid_bev'] collapsed over channels
+        vb = output.get("valid_bev")
+        if vb is None:
+            # fallback: everything valid
+            vb_spatial = torch.ones(gt.shape[0], *gt.shape[2:], dtype=torch.bool, device=gt.device)
         else:
-            observable_mask = output["valid_bev"][..., :-1]
-            non_observable_mask = torch.logical_not(observable_mask)
+            # vb may be NCHW (N,C,H,W), NHWC (N,H,W,C) or (N,H,W).
+            if vb.ndim == 4:
+                # Try candidate interpretations and pick the one whose spatial
+                # shape matches GT (after optional resize) or is closest.
+                cand1 = (vb.sum(dim=1) > 0)  # assume NCHW -> (N,H,W)
+                cand2 = (vb.sum(dim=-1) > 0)  # assume NHWC -> (N,H,W)
 
+                # Prefer candidate that already matches GT spatial dims
+                if cand1.shape[1:] == gt.shape[2:]:
+                    vb_spatial = cand1
+                elif cand2.shape[1:] == gt.shape[2:]:
+                    vb_spatial = cand2
+                else:
+                    # pick cand1 by default; will be resized below
+                    vb_spatial = cand1
+            elif vb.ndim == 3:
+                vb_spatial = vb > 0
+            else:
+                vb_spatial = vb.bool()
+
+            # Resize vb_spatial to GT size if needed
+            if vb_spatial.shape[1:] != gt.shape[2:]:
+                vb_spatial = F.interpolate(vb_spatial.unsqueeze(1).float(), size=gt.shape[2:], mode='nearest').squeeze(1).bool()
+
+        # Get confidence_map if present and resize to GT size
+        conf = data.get("confidence_map")
+        if conf is not None:
+            # Normalize conf to (N,H,W)
+            if conf.ndim == 4 and conf.shape[1] == 1:
+                conf = conf.squeeze(1)
+            elif conf.ndim == 4 and conf.shape[-1] == 1:
+                conf = conf.squeeze(-1)
+
+            if conf.shape[1:] != gt.shape[2:]:
+                conf = F.interpolate(conf.unsqueeze(1).float(), size=gt.shape[2:], mode='nearest').squeeze(1).long()
+
+        if conf is not None:
+            observable_mask = torch.logical_and(vb_spatial, conf == 0)
+            non_observable_mask = torch.logical_and(vb_spatial, conf == 1)
+        else:
+            observable_mask = vb_spatial
+            non_observable_mask = torch.logical_not(vb_spatial)
+
+        # Loop per class and accumulate stats
         for class_idx in range(self.num_classes):
             pred_mask = pred[:, class_idx] > 0.5
-            gt_mask = gt[..., class_idx]
+            gt_mask = gt[:, class_idx] > 0.5
 
             # For observable areas
             gt_mask_bool = gt_mask.bool()
-            tp_observable = torch.logical_and(
-                torch.logical_and(pred_mask, gt_mask_bool), observable_mask
-            ).sum()
-            fn_observable = torch.logical_and(
-                torch.logical_and(gt_mask_bool, ~pred_mask), observable_mask
-            ).sum()
-            fp_observable = torch.logical_and(
-                torch.logical_and(~gt_mask_bool, pred_mask), observable_mask
-            ).sum()
-            
+            tp_observable = torch.logical_and(torch.logical_and(pred_mask, gt_mask_bool), observable_mask).sum()
+            fn_observable = torch.logical_and(torch.logical_and(gt_mask_bool, ~pred_mask), observable_mask).sum()
+            fp_observable = torch.logical_and(torch.logical_and(~gt_mask_bool, pred_mask), observable_mask).sum()
+
             # For non-observable areas
-            tp_non_observable = torch.logical_and(
-                torch.logical_and(pred_mask, gt_mask_bool), non_observable_mask
-            ).sum()
-            fn_non_observable = torch.logical_and(
-                torch.logical_and(gt_mask_bool, ~pred_mask), non_observable_mask
-            ).sum()
-            fp_non_observable = torch.logical_and(
-                torch.logical_and(~gt_mask_bool, pred_mask), non_observable_mask
-            ).sum()
+            tp_non_observable = torch.logical_and(torch.logical_and(pred_mask, gt_mask_bool), non_observable_mask).sum()
+            fn_non_observable = torch.logical_and(torch.logical_and(gt_mask_bool, ~pred_mask), non_observable_mask).sum()
+            fp_non_observable = torch.logical_and(torch.logical_and(~gt_mask_bool, pred_mask), non_observable_mask).sum()
             
             # Update the state
             self.tp_observable[class_idx] += tp_observable
@@ -129,17 +193,97 @@ class mAP(torchmetrics.classification.MultilabelPrecision):
 
     def update(self, output, data):
 
-        if "confidence_map" in data:
-            observable_mask = torch.logical_and(
-                output["valid_bev"][..., :-1], data["confidence_map"] == 0)
-        else:
-            observable_mask = output["valid_bev"][..., :-1]
-
+        # Build observable mask similarly to IOU.update
         pred = output['output']
-        pred = pred.permute(0, 2, 3, 1)
-        pred = pred[observable_mask]
 
-        target = data['seg_masks']
-        target = target[observable_mask]
+        # Ensure pred is NCHW and resize to match seg_masks spatially
+        gt = data['seg_masks']
+        # If gt is NHWC (last dim == channel count), convert to NCHW for size info
+        if gt.ndim == 4 and gt.shape[-1] == pred.shape[1]:
+            gt_nchw = gt.permute(0, 3, 1, 2)
+        else:
+            gt_nchw = gt if gt.ndim == 4 else gt.unsqueeze(0)
 
-        super(mAP, self).update(pred, target)
+        if pred.ndim == 4 and pred.shape[1] != gt_nchw.shape[1]:
+            if pred.shape[-1] == gt_nchw.shape[1]:
+                pred = pred.permute(0, 3, 1, 2)
+
+        if pred.shape[2:] != gt_nchw.shape[2:]:
+            pred = F.interpolate(pred, size=gt_nchw.shape[2:], mode='bilinear', align_corners=False)
+
+        # compute vb_spatial same as IOU
+        vb = output.get("valid_bev")
+        if vb is None:
+            vb_spatial = torch.ones(gt_nchw.shape[0], *gt_nchw.shape[2:], dtype=torch.bool, device=gt_nchw.device)
+        else:
+            if vb.ndim == 4:
+                cand1 = (vb.sum(dim=1) > 0)
+                cand2 = (vb.sum(dim=-1) > 0)
+                if cand1.shape[1:] == gt_nchw.shape[2:]:
+                    vb_spatial = cand1
+                elif cand2.shape[1:] == gt_nchw.shape[2:]:
+                    vb_spatial = cand2
+                else:
+                    vb_spatial = cand1
+            elif vb.ndim == 3:
+                vb_spatial = vb > 0
+            else:
+                vb_spatial = vb.bool()
+
+            if vb_spatial.shape[1:] != gt_nchw.shape[2:]:
+                vb_spatial = F.interpolate(vb_spatial.unsqueeze(1).float(), size=gt_nchw.shape[2:], mode='nearest').squeeze(1).bool()
+
+        conf = data.get("confidence_map")
+        if conf is not None:
+            if conf.ndim == 4 and conf.shape[1] == 1:
+                conf = conf.squeeze(1)
+            elif conf.ndim == 4 and conf.shape[-1] == 1:
+                conf = conf.squeeze(-1)
+
+            if conf.shape[1:] != gt_nchw.shape[2:]:
+                conf = F.interpolate(conf.unsqueeze(1).float(), size=gt_nchw.shape[2:], mode='nearest').squeeze(1).long()
+
+            observable_mask = torch.logical_and(vb_spatial, conf == 0)
+        else:
+            observable_mask = vb_spatial
+
+        # Now select predicted and target pixels for observed locations
+        # pred: N,C,H,W -> permute to N,H,W,C
+        pred_nhwc = pred.permute(0, 2, 3, 1)
+
+        # normalize target to NHWC
+        if gt.ndim == 4 and gt.shape[-1] == pred_nhwc.shape[-1]:
+            target_nhwc = gt
+        elif gt.ndim == 4 and gt.shape[1] == pred.shape[1]:
+            target_nhwc = gt.permute(0, 2, 3, 1)
+        else:
+            # fallback: convert nchw form
+            target_nhwc = gt.permute(0, 2, 3, 1) if gt.ndim == 4 else gt
+
+        # Select observed pixels per-sample to avoid shape/order mismatches
+        pred_list = []
+        target_list = []
+        batch_size = pred_nhwc.shape[0]
+        for i in range(batch_size):
+            mask_i = observable_mask[i]
+            # Reduce any extra trailing dimensions (e.g., channel) to HxW
+            if mask_i.ndim > 2:
+                mask_i = mask_i.any(dim=-1)
+            # Ensure boolean
+            mask_i = mask_i.bool()
+            coords = mask_i.nonzero(as_tuple=False)
+            if coords.numel() == 0:
+                continue
+            # coords is (K, 2): (row, col)
+            pi = pred_nhwc[i, coords[:, 0], coords[:, 1]]
+            ti = target_nhwc[i, coords[:, 0], coords[:, 1]]
+            pred_list.append(pi)
+            target_list.append(ti)
+
+        if len(pred_list) == 0:
+            return
+
+        pred_sel = torch.cat(pred_list, dim=0)
+        target_sel = torch.cat(target_list, dim=0)
+
+        super(mAP, self).update(pred_sel, target_sel)

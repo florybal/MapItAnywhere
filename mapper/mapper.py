@@ -90,7 +90,7 @@ def train(cfg: Configuration):
         logger.watch(model, log="all", log_freq=500)
 
     if cfg.training.checkpoint is not None:
-        state_dict = torch.load(cfg.training.checkpoint)['state_dict']
+        state_dict = torch.load(cfg.training.checkpoint, weights_only=False)['state_dict']
         model.load_state_dict(state_dict, strict=False)
 
     trainer_args = OmegaConf.to_container(cfg.training.trainer)
@@ -110,3 +110,4 @@ if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
 
     train()
+

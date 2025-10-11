@@ -1,0 +1,28 @@
+services:
+  mapper:
+    container_name: MIA
+    build: .
+    restart: unless-stopped
+    shm_size: "16g"
+    ipc: host
+    volumes:
+      # Mount the project workspace so edits made inside the container persist on the host
+      - /home/bevlog-2/Documents/MapItAnywhere:/workspace
+      # Map host cache to the container user's cache dir (container runs as 'user')
+      - /home/bevlog-2/.cache:/home/user/.cache
+      - ${PWD}/datasets:/home/user/datasets
+      # Keep working dir inside the mounted project
+    working_dir: /workspace
+    tty: true
+    stdin_open: true
+
+    # GPU simplificado para Compose
+    gpus: all
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - PYTHONUNBUFFERED=1
+      - DEBIAN_FRONTEND=noninteractive
+
+    command: bash

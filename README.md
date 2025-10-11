@@ -122,6 +122,84 @@ To use Mapper using Docker, please follow the steps:
     
         docker run -v <PATH_TO_THIS_REPO>:/home/mapper --network=host -it --gpus=all mapper:release
 
+### Development with docker-compose (persist changes)
+
+If you want to develop inside a container and have all edits persist on your host filesystem, use the provided `docker-compose.yml` which bind-mounts the project folder into the container. This is the recommended workflow for iterative development.
+
+1. Build and start the service (rebuild after changing the Dockerfile):
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+2. Open a shell inside the running container:
+
+```bash
+docker compose exec mapper bash
+```
+
+3. Verify persistence from inside the container:
+
+```bash
+# inside the container
+cd /workspace
+echo "hello from container" > hello_from_container.txt
+exit
+
+# back on the host
+ls -la /home/bevlog-2/Documents/MapItAnywhere/hello_from_container.txt
+cat /home/bevlog-2/Documents/MapItAnywhere/hello_from_container.txt
+```
+
+The file created inside the container should appear on the host path above. The `docker-compose.yml` mounts the repo root at `/workspace` in the container so edits are immediate and persistent.
+
+Notes and gotchas:
+- Permissions: the image creates a user `user` (uid 1000). If your host user has a different uid/gid you may see permission differences. You can add `user: "${UID}:${GID}"` to the `docker-compose.yml` service (and export UID/GID in your shell) if needed.
+- Cache and datasets: the compose file maps host cache and dataset directories into the container (`/home/user/.cache` and `/home/user/datasets`) to avoid re-downloading large files.
+- Alternatives: if you prefer not to bind-mount the project, you can use named volumes or create/commit images (`docker commit`) but those approaches are less convenient for iterative code edits.
+
+If you want, I can also add a short troubleshooting subsection about common permission fixes or add the `user: "${UID}:${GID}"` option to `docker-compose.yml` and document how to use it.
+
+Quick helper script
+
+We also provide a small helper script to simplify common actions (build/up/down/shell/run/logs):
+
+```bash
+./scripts/run_container.sh build
+./scripts/run_container.sh up
+./scripts/run_container.sh shell
+```
+
+This wrapper uses the repository's `docker-compose.yml` and forwards commands to `docker compose`. Use `UID`/`GID` environment variables when calling `up` if you need to align file ownership between host and container.
+
+## Local development modifications
+
+This repository in this workspace has a few small, local changes to make iterative development inside a container easier. These changes are intended for local development and are safe to revert if you prefer the original upstream behavior.
+
+Summary of local edits made in this copy:
+
+- `docker-compose.yml`: the service `mapper` was updated to bind-mount the project root from the host into the container at `/workspace` so edits inside the container persist on the host. The cache mount was remapped to `/home/user/.cache` to match the container user's HOME.
+- `scripts/run_container.sh`: helper script added to simplify common `docker compose` operations (build, up, down, shell, run, logs). Executable at `./scripts/run_container.sh`.
+- `README.md`: added the "Development with docker-compose (persist changes)" section and a short "Quick helper script" snippet referencing `scripts/run_container.sh` (this file you're reading now).
+
+How to revert these local changes:
+
+1. Restore the original `docker-compose.yml` from upstream (if you have the original file saved) or remove the bind-mount lines and restore the previous cache path.
+2. Delete the helper script:
+
+```bash
+rm -f scripts/run_container.sh
+```
+
+3. Manually revert the README edits or replace `README.md` with the upstream copy.
+
+If you'd like, I can:
+- Add `user: "${UID}:${GID}"` to `docker-compose.yml` to force the container to run as the host user (helps permissions).
+- Create a revert commit that returns these files to the upstream state instead of manual deletion.
+
+Tell me which of the optional actions you'd like me to do next.
+
 ## Training
 
 ### Pre-train with MIA Dataset
