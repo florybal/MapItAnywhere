@@ -67,5 +67,10 @@ bash run_container.sh down
 
 ---
 
+## Trained Weights
+We have hosted trained weights for the Mapper model using the MIA dataset on Huggingface. [Click Here](https://huggingface.co/mapitanywhere/mapper) to download.
+
+---
+
 ## License
 This project is licensed under the CC-BY-NC license. See the LICENSE file for details.
