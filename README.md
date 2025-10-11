@@ -1,6 +1,10 @@
 # Map It Anywhere (MIA)
 
 ## Overview
+This project is a modified version of the original **Map It Anywhere (MIA)** project. The modifications have been made in compliance with the Creative Commons Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0).
+
+The original project can be found at: [Map It Anywhere GitHub Repository](https://github.com/MapItAnywhere/MapItAnywhere).
+
 Map It Anywhere (MIA) is a project designed to empower Bird’s Eye View (BEV) mapping using large-scale public data. This README provides instructions on how to set up and run the project.
 
 ---
