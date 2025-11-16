@@ -12,7 +12,6 @@ services:
       - /home/bevlog-2/.cache:/home/user/.cache
       - ${PWD}/datasets:/home/user/datasets
       # Keep working dir inside the mounted project
-    working_dir: /workspace
     tty: true
     stdin_open: true
 

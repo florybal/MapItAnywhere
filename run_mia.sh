@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CKPT="/home/user//weights//model.ckpt"
-DATAROOT="/home/user/datasets/nuScenes"                 # v1.0-{trainval|test} + samples/ sweeps/ maps/
-MAPDIR="/home/user/datasets/labels_bev_bits"         # PNGs por token que você gerou p/ o TEST
+CKPT="/home/user/weights/model.ckpt"
+DATAROOT="/home/user/datasets/nuscenes/v1.0"                 # v1.0-{trainval} + samples/ sweeps/ maps/
+MAPDIR="/home/user/datasets/nuscenes/map-labels-v1.3/datasets/nuscenes/map-labels-v1.3/"         # PNGs por token 
 
 # sanity checks
 [ -f "$CKPT" ] || { echo "ERRO: checkpoint não existe: $CKPT"; exit 1; }

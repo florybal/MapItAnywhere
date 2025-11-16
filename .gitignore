@@ -132,7 +132,10 @@ celerybeat.pid
 *.sage.py
 
 # Pesos
-weigthts/
+weights/
+
+#dados
+/datasets
 
 # Environments
 .env
