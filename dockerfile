@@ -24,11 +24,5 @@ ENV HOME=/home/user \
 
 WORKDIR $HOME
 
-COPY --chown=user . $HOME 
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install "numpy<2" --force-reinstall
-
 # Get Weights
 #RUN bash get_weights.sh -> deu problema na construção do docker

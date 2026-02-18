@@ -1,6 +1,7 @@
 torch
 torchvision
-numpy
+huggingface_hub
+numpy<2
 opencv-python
 Pillow
 tqdm>=4.36.0

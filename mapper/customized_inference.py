@@ -1,3 +1,4 @@
+import os
 from matplotlib import pyplot as plt
 from mapper.utils.io import read_image
 from mapper.utils.exif import EXIF
@@ -133,13 +134,21 @@ def main(cfg: Configuration):
     calibrator = ImageCalibrator().to(device)
 
     model = GenericModule(cfg)
-    state_dict = torch.load(cfg.training.checkpoint, map_location=device)
+    state_dict = torch.load(cfg.training.checkpoint, map_location=device, weights_only=False)
     model.load_state_dict(state_dict["state_dict"], strict=False)
     model = model.to(device)
     model = model.eval()
 
     fig = infer(calibrator, model, cfg.image_path)
-    fig.savefig(cfg.save_path)
+    
+    # Create output directory if it doesn't exist
+    save_path = cfg.save_path
+    if not save_path.endswith('.png'):
+        save_path = save_path + '.png'
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    fig.savefig(save_path)
+    print(f"Output saved to: {save_path}")
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,6 @@
 # Mapper-Specific
 datasets/
+weights/
 wandb/
 eval_results/
 lightning_logs/
