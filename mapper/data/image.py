@@ -126,8 +126,9 @@ def pad_image(
         assert w <= w_new
         top = bottom = left = right = 0
     slice_out = np.s_[..., : min(h, h_new), : min(w, w_new)]
-    print(slice_out)
-    print(h, h_new, w, w_new)
+    # debug prints removed to reduce console noise
+    # print(slice_out)
+    # print(h, h_new, w, w_new)
     slice_in = np.s_[
         ..., max(top, 0) : h - max(bottom, 0), max(left, 0) : w - max(right, 0)
     ]

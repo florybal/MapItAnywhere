@@ -5,6 +5,7 @@ import umsgpack
 from PIL import Image
 import json
 import torchvision.transforms as tvf
+from ..transforms import gaussian_noise
 
 from .transform import BEVTransform
 from ..schema import KITTIDataConfiguration
@@ -67,7 +68,7 @@ class BEVKitti360Dataset(data.Dataset):
 
         if self.cfg.augmentations.gaussian_noise.enabled:
             augmentations.append(
-                tvf.GaussianNoise(
+                gaussian_noise(
                     mean=self.cfg.augmentations.gaussian_noise.mean,
                     std=self.cfg.augmentations.gaussian_noise.std,
                 )

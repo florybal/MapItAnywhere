@@ -54,6 +54,14 @@ class ImageLoggerCallback(pl.Callback):
         self.num_classes = num_classes
 
     def log_image(self, trainer, pl_module, outputs, batch, batch_idx, mode="train"):
+        logger = getattr(trainer, "logger", None)
+        if logger is None:
+            return
+
+        experiment = getattr(logger, "experiment", None)
+        if experiment is None or not hasattr(experiment, "log"):
+            return
+
         fpv_rgb = batch["image"]
         fpv_grid = torchvision.utils.make_grid(
             fpv_rgb, nrow=8, normalize=False)
@@ -79,7 +87,7 @@ class ImageLoggerCallback(pl.Callback):
                 wandb.Image(pred_class_i_grid, caption=f"pred_class_{i}")
             ]
 
-        trainer.logger.experiment.log(
+        experiment.log(
             {
                 "{}/images".format(mode): images
             }

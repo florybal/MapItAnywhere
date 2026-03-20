@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.utils.data as torchdata
 import torchvision.transforms as tvf
+from ..transforms import gaussian_noise
 from PIL import Image
 from pathlib import Path
 
@@ -83,7 +84,7 @@ class MapLocDataset(torchdata.Dataset):
 
         if self.cfg.augmentations.gaussian_noise.enabled:
             augmentations.append(
-                tvf.GaussianNoise(
+                gaussian_noise(
                     mean=self.cfg.augmentations.gaussian_noise.mean,
                     std=self.cfg.augmentations.gaussian_noise.std,
                 )

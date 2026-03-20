@@ -7,6 +7,7 @@ from itertools import chain
 from PIL import Image
 from torchvision import transforms as T
 import torchvision.transforms as tvf
+from ..transforms import gaussian_noise
 from torchvision.transforms.functional import to_tensor
 
 from .splits_roddick import create_splits_scenes_roddick
@@ -168,7 +169,7 @@ class NuScenesDataset(torch.utils.data.Dataset):
 
         if self.cfg.augmentations.gaussian_noise.enabled:
             augmentations.append(
-                tvf.GaussianNoise(
+                gaussian_noise(
                     mean=self.cfg.augmentations.gaussian_noise.mean,
                     std=self.cfg.augmentations.gaussian_noise.std,
                 )

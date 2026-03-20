@@ -98,16 +98,37 @@ class EnhancedLoss(nn.Module):
         probs = pred['output'].permute(0, 2, 3, 1)  # (B, H, W, C)
         logits = pred['logits'].permute(0, 2, 3, 1)  # (B, H, W, C)
         labels: torch.Tensor = data['seg_masks']  # (B, H, W, C)
+        # if labels spatial size does not match logits, downsample labels to fit
+        if labels.shape[1:3] != logits.shape[1:3]:
+            lab = labels.permute(0, 3, 1, 2)  # B,C,H,W
+            lab = torch.nn.functional.interpolate(lab.float(), size=logits.shape[1:3], mode='nearest')
+            labels = lab.permute(0, 2, 3, 1)
 
         loss_mask = torch.ones(
             labels.shape[:3], device=labels.device, dtype=labels.dtype)
 
         if self.requires_frustrum:
             frustrum_mask = pred["valid_bev"][..., :-1] != 0
+            # Align loss_mask spatial size with frustrum_mask; the latter is
+            # determined by the projection grid and may be much smaller than
+            # the raw annotation resolution.  Downsample loss_mask if needed.
+            if loss_mask.shape[1:] != frustrum_mask.shape[1:]:
+                loss_mask = torch.nn.functional.interpolate(
+                    loss_mask.unsqueeze(1).float(),
+                    size=frustrum_mask.shape[1:],
+                    mode="nearest",
+                ).squeeze(1)
             loss_mask = loss_mask * frustrum_mask.float()
 
         if self.requires_flood_mask:
             flood_mask = data["flood_masks"] == 0
+            # ensure flood_mask matches loss_mask spatial size
+            if flood_mask.shape[1:] != loss_mask.shape[1:]:
+                flood_mask = torch.nn.functional.interpolate(
+                    flood_mask.unsqueeze(1).float(),
+                    size=loss_mask.shape[1:],
+                    mode="nearest",
+                ).squeeze(1).bool()
             loss_mask = loss_mask * flood_mask.float()
 
         if self.xent_weight > 0.:

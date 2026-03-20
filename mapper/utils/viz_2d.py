@@ -56,33 +56,36 @@ def features_to_RGB(*Fs, masks=None, skip=1):
     return Fs_rgb
 
 
-def one_hot_argmax_to_rgb(y, num_class):
+def one_hot_argmax_to_rgb(y, num_class, class_colors=None):
     '''
+    Convert a one-hot prediction map to an RGB segmentation visualization.
+
     Args:
-        probs: (B, C, H, W)
-        num_class: int
-        0: road 0
-1: crossing 1
-2: explicit_pedestrian 2
-4: building 
-6: terrain
-7: parking `
-
+        y: Tensor of shape (B, C, H, W) containing one-hot logits or probs.
+        num_class: int number of semantic classes (excluding void).
+        class_colors: optional list of RGB tuples (0-255) for each class plus
+            one for the void/predicted_void entry.  If None a default palette
+            is generated using a matplotlib colormap so that arbitrary
+            ``num_class`` values are supported.
     '''
 
-
-    class_colors = {
-        'road': (68, 68, 68),           # 0: Black
-        'crossing': (244, 162, 97),     # 1; Red
-        'explicit_pedestrian': (233, 196, 106),  # 2: Yellow
-        # 'explicit_void': (128, 128, 128),      # 3: White
-        'building': (231, 111, 81),   # 5: Magenta
-        'terrain': (42, 157, 143),    # 7: Cyan
-        'parking': (204, 204, 204),  # 8: Dark Grey
-        'predicted_void': (255, 255, 255)
-    }
-    class_colors = class_colors.values()
-    class_colors = [torch.tensor(x).float() for x in class_colors]
+    # build a color map if caller did not provide one
+    if class_colors is None:
+        # use a qualitative colormap with enough distinct colors
+        cmap = plt.get_cmap('tab20')
+        class_colors = []
+        for i in range(num_class + 1):
+            r, g, b, _ = cmap(i % cmap.N)
+            class_colors.append((int(r * 255), int(g * 255), int(b * 255)))
+    # convert to tensor list, replacing None with gray
+    default_color = torch.tensor((128,128,128)).float()
+    new_colors = []
+    for x in class_colors:
+        if x is None:
+            new_colors.append(default_color)
+        else:
+            new_colors.append(torch.tensor(x).float())
+    class_colors = new_colors
 
     argmaxed = torch.argmax((y > 0.25).float(), dim=1) # Take argmax
     argmaxed[torch.all(y <= 0.25, dim=1)] = num_class
@@ -102,6 +105,40 @@ def one_hot_argmax_to_rgb(y, num_class):
         seg_rgb[:, 2, :, :][argmaxed == i] = class_colors[i][2]
 
     return seg_rgb
+
+
+# utility to read color list from a text file (R G B name) used by indoor dataset
+
+def load_label_colors(path):
+    """
+    Read a label_colors.txt file and return two lists: colors and labels.
+
+    File format expected: each line "R G B labelname" (labelname may contain
+    underscores instead of spaces).  Lines starting with '#' are ignored.
+
+    Returns:
+        colors: list of (R, G, B) tuples
+        labels: list of str names corresponding to each color
+    """
+    colors = []
+    labels = []
+    try:
+        with open(path, 'r') as f:
+            for line in f:
+                if line.strip().startswith('#') or not line.strip():
+                    continue
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    try:
+                        r, g, b = map(int, parts[:3])
+                        name = " ".join(parts[3:])
+                        colors.append((r, g, b))
+                        labels.append(name)
+                    except ValueError:
+                        continue
+    except FileNotFoundError:
+        pass
+    return colors, labels
 
 def plot_images(imgs, titles=None, cmaps="gray", dpi=100, pad=0.5, adaptive=True):
     """Plot a set of images horizontally.
@@ -136,15 +173,24 @@ def plot_images(imgs, titles=None, cmaps="gray", dpi=100, pad=0.5, adaptive=True
             ax[i].set_title(titles[i])
     
     # Create legend
-    class_colors = {
-        'Road': (68, 68, 68),           # 0: Black
-        'Crossing': (244, 162, 97),     # 1; Red
-        'Sidewalk': (233, 196, 106),  # 2: Yellow
-        'Building': (231, 111, 81),   # 5: Magenta
-        'Terrain': (42, 157, 143),    # 7: Cyan
-        'Parking': (204, 204, 204),  # 8: Dark Grey
-    }
-    patches = [mpatches.Patch(color=[c/255.0 for c in color], label=label) for label, color in class_colors.items()]
-    plt.legend(handles=patches, loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=3)
+    # legend can be provided via external labels/colors; store names if present
+    if hasattr(plot_images, '_legend_info') and plot_images._legend_info is not None:
+        labels, colors = plot_images._legend_info
+        # drop background entry if present
+        filtered = [(lab, col) for lab, col in zip(labels, colors) if lab.lower() != 'background']
+        if filtered:
+            patches = [mpatches.Patch(color=[c/255.0 for c in color], label=label) for label, color in filtered]
+            plt.legend(handles=patches, loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=3)
+    else:
+        class_colors = {
+            'Road': (68, 68, 68),           # 0: Black
+            'Crossing': (244, 162, 97),     # 1; Red
+            'Sidewalk': (233, 196, 106),  # 2: Yellow
+            'Building': (231, 111, 81),   # 5: Magenta
+            'Terrain': (42, 157, 143),    # 7: Cyan
+            'Parking': (204, 204, 204),  # 8: Dark Grey
+        }
+        patches = [mpatches.Patch(color=[c/255.0 for c in color], label=label) for label, color in class_colors.items()]
+        plt.legend(handles=patches, loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=3)
 
     fig.tight_layout(pad=pad)

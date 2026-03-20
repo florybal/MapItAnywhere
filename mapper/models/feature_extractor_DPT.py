@@ -60,7 +60,15 @@ class FeatureExtractor(BaseModel):
         self.build_encoder(conf)
 
     def _forward(self, data):
-        _, _, h, w = data["image"].shape
+        # debug shape: should be [B, C, H, W]
+        img = data["image"]
+        logger.info("FeatureExtractor input image shape %s", tuple(img.shape))
+        # if channels are not in dim=1 but last dim==3, assume NHWC and convert
+        if img.dim() == 4 and img.shape[1] != 3 and img.shape[-1] == 3:
+            logger.info("FeatureExtractor detected NHWC image, converting to NCHW")
+            img = img.permute(0, 3, 1, 2)
+            data["image"] = img
+        _, _, h, w = img.shape
 
         h_num_patches = h // self.crop_size
         w_num_patches = w // self.crop_size

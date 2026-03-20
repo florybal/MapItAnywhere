@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 from pathlib import Path
 
 @dataclass
@@ -35,6 +35,8 @@ class DataConfiguration:
     seed: Optional[int] = 0
     random: Optional[bool] = True
     num_threads: Optional[int] = None
+    # for visualization/inference only: ignore FOV mask and render full square
+    orthographic: bool = False
 
 @dataclass(kw_only=True)
 class MIADataConfiguration(DataConfiguration):
@@ -72,4 +74,39 @@ class NuScenesDataConfiguration(DataConfiguration):
     percentage: float = 1.0
     class_mapping: Optional[Any] = None
     version: str = "v1.0-trainval"
+
+
+@dataclass(kw_only=True)
+class IndoorDataConfiguration(DataConfiguration):
+    """
+    Configuração para dataset Indoor BEV (warehouse/industrial).
+    
+    Args:
+        data_dir: Diretório raiz do dataset
+        pixel_per_meter: Resolução do grid BEV (pixels por metro)
+        crop_size_meters: Tamanho da área BEV em metros
+        room_types: Lista de tipos de ambientes para filtrar (opcional)
+        floor_levels: Lista de andares para filtrar (opcional)
+        class_names: Lista com nomes das classes
+        class_mapping: Mapeamento de classes (opcional)
+    """
+    
+    # Diretórios
+    data_dir: Path
+    
+    # Parâmetros de grid BEV
+    pixel_per_meter: int
+    crop_size_meters: int
+    
+    # Filtros opcionais
+    room_types: Optional[List[str]] = None
+    floor_levels: Optional[List[int]] = None
+    
+    # Classes
+    class_names: Optional[List[str]] = None
+    class_mapping: Optional[Any] = None
+    
+    # Defaults
+    name: str = "indoor"
+    percentage: float = 1.0  # Fração do dataset a usar
     

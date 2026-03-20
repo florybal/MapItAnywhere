@@ -19,6 +19,9 @@ def get_dataset(name):
     elif name == "kitti":
         from .kitti.data_module import BEVKitti360Data
         return BEVKitti360Data
+    elif name == "indoor":
+        from .indoor.data_module import IndoorDataModule
+        return IndoorDataModule
     else:
         raise NotImplementedError(f"Dataset {name} not implemented.")
 
