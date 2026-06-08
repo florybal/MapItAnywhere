@@ -7,13 +7,13 @@ services:
     ipc: host
     volumes:
       # Mount the project workspace so edits made inside the container persist on the host
-      - /home/bevlog-2/Documents/MapItAnywhere:/workspace
+      - ${PWD}:/home/user
       # Map host cache to the container user's cache dir (container runs as 'user')
       - /home/bevlog-2/.cache:/home/user/.cache
-      - ${PWD}/datasets:/home/user/datasets
       # Keep working dir inside the mounted project
     tty: true
     stdin_open: true
+    working_dir: /home/user
 
     # GPU simplificado para Compose
     gpus: all

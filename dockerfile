@@ -13,7 +13,8 @@ RUN apt-get update && apt-get install -y \
 RUN apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --pre torchvision --index-url https://download.pytorch.org/whl/nightly/cu124 \
-    && pip install nuscenes-devkit
+    && pip install nuscenes-devkit \
+    && pip install --no-cache-dir pytorch-lightning torchmetrics wandb hydra-core omegaconf
 
 RUN useradd -m -u 1000 user
 
@@ -28,6 +29,8 @@ COPY --chown=user . $HOME
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Fix numpy compatibility
 RUN pip install "numpy<2" --force-reinstall
 
 # Get Weights

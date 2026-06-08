@@ -51,7 +51,9 @@ class MapillaryDataModule(pl.LightningDataModule):
     def __init__(self, cfg: MIADataConfiguration):
         super().__init__()
         self.cfg = cfg
-        self.root = self.cfg.data_dir
+        # Ensure root is a Path
+        from pathlib import Path
+        self.root = Path(self.cfg.data_dir)
         self.local_dir = None
 
     def prepare_data(self):

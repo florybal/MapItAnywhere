@@ -13,6 +13,9 @@ def get_dataset(name):
     if name == "mapillary":
         from .mapillary.data_module import MapillaryDataModule
         return MapillaryDataModule
+    elif name == "indoor":
+        from .indoor.data_module import IndoorDataModule
+        return IndoorDataModule
     elif name == "nuscenes":
         from .nuscenes.data_module import NuScenesData
         return NuScenesData

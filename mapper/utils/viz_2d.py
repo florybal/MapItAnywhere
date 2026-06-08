@@ -58,30 +58,49 @@ def features_to_RGB(*Fs, masks=None, skip=1):
 
 def one_hot_argmax_to_rgb(y, num_class):
     '''
+    Convert one-hot or multi-class predictions to RGB visualization
     Args:
-        probs: (B, C, H, W)
-        num_class: int
-        0: road 0
-1: crossing 1
-2: explicit_pedestrian 2
-4: building 
-6: terrain
-7: parking `
-
+        y: (B, C, H, W) logits or probabilities
+        num_class: int, number of classes
+    
+    Indoor warehouse semantic classes (9 classes):
+        0: background (black)
+        1: obstrucao (red)
+        2: empilhadeira (orange)
+        3: carga (yellow)
+        4: maquina (blue)
+        5: humano (cyan)
+        6: navegavel (green)
+        7: estrutura (purple)
+        8: portapalete (brown)
     '''
 
-
-    class_colors = {
-        'road': (68, 68, 68),           # 0: Black
-        'crossing': (244, 162, 97),     # 1; Red
-        'explicit_pedestrian': (233, 196, 106),  # 2: Yellow
-        # 'explicit_void': (128, 128, 128),      # 3: White
-        'building': (231, 111, 81),   # 5: Magenta
-        'terrain': (42, 157, 143),    # 7: Cyan
-        'parking': (204, 204, 204),  # 8: Dark Grey
-        'predicted_void': (255, 255, 255)
-    }
-    class_colors = class_colors.values()
+    # Keep original class color mapping; only set predicted_void to a
+    # light gray to represent absence of prediction in the visualization.
+    # Align colors/order with datasets/.../label_colors.txt (source of truth)
+    # File order (index -> name -> RGB):
+    # 0 background       -> 0 0 0
+    # 1 carga            -> 138 43 226
+    # 2 empilhadeira     -> 255 140 0
+    # 3 estrutura        -> 255 255 0
+    # 4 humano           -> 0 170 255
+    # 5 maquina          -> 0 0 255
+    # 6 navegavel        -> 0 255 0
+    # 7 obstrucao        -> 255 0 0
+    # 8 portapalete      -> 205 133 63
+    # Add predicted_void (absence of prediction) as light gray at the end.
+    class_colors = [
+        (0, 0, 0),         # 0: background
+        (138, 43, 226),    # 1: carga
+        (255, 140, 0),     # 2: empilhadeira
+        (255, 255, 0),     # 3: estrutura
+        (0, 170, 255),     # 4: humano
+        (0, 0, 255),       # 5: maquina
+        (0, 255, 0),       # 6: navegavel
+        (255, 0, 0),       # 7: obstrucao
+        (205, 133, 63),    # 8: portapalete
+        (211, 211, 211),   # 9: predicted_void (light gray)
+    ]
     class_colors = [torch.tensor(x).float() for x in class_colors]
 
     argmaxed = torch.argmax((y > 0.25).float(), dim=1) # Take argmax

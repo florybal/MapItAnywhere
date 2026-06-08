@@ -5,18 +5,34 @@ from mapper.utils.wrappers import Camera
 from mapper.data.image import rectify_image, resize_image
 from mapper.utils.viz_2d import one_hot_argmax_to_rgb, plot_images
 from mapper.module import GenericModule
-from perspective2d import PerspectiveFields
 import torch
 import numpy as np
-from typing import Optional, Tuple
-import glob 
+from typing import Optional, Tuple, Any
+import glob
 import hydra
 from hydra.core.config_store import ConfigStore
-from typing import Any
 from dataclasses import dataclass
 
 from .models.schema import ModelConfiguration, DINOConfiguration, ResNetConfiguration
 from .data.schema import MIADataConfiguration, KITTIDataConfiguration, NuScenesDataConfiguration
+
+try:
+    from perspective2d import PerspectiveFields
+except ModuleNotFoundError:
+    class PerspectiveFields(torch.nn.Module):
+        def __init__(self, version: str = "Paramnet-360Cities-edina-centered"):
+            super().__init__()
+            self.version = version
+
+        def inference(self, img_bgr: np.ndarray, *args: Any, **kwargs: Any):
+            h, w = img_bgr.shape[:2]
+            focal_length = 0.75 * max(h, w)
+            vfov = np.rad2deg(2 * np.arctan(h / (2 * focal_length)))
+            return {
+                "pred_roll": torch.tensor(0.0),
+                "pred_pitch": torch.tensor(0.0),
+                "pred_vfov": torch.tensor(float(vfov)),
+            }
 
 @dataclass
 class ExperimentConfiguration:
@@ -108,7 +124,7 @@ def preprocess_pipeline(image, roll_pitch, camera):
     }
 
 
-def infer(calibrator, model, image_path: str):
+def infer(calibrator, model, image_path: str, cfg=None, return_prediction: bool = False):
 
     image = read_image(image_path)
     with open(image_path, "rb") as fid:
@@ -120,9 +136,12 @@ def infer(calibrator, model, image_path: str):
     res = model(data)
     
     prediction = res['output']
-    rgb_prediction = one_hot_argmax_to_rgb(prediction, 6).squeeze(0).permute(1, 2, 0).cpu().long().numpy()
+    rgb_prediction = one_hot_argmax_to_rgb(prediction, prediction.shape[1]).squeeze(0).permute(1, 2, 0).cpu().long().numpy()
     valid = res['valid_bev'].squeeze(0)[..., :-1]
     rgb_prediction[~valid.cpu().numpy()] = 255
+
+    if return_prediction:
+        return rgb_prediction
     
     plot_images([image, rgb_prediction], titles=["Input Image", "Top-Down Prediction"], pad=2, adaptive=True)
 
@@ -133,7 +152,7 @@ def main(cfg: Configuration):
     calibrator = ImageCalibrator().to(device)
 
     model = GenericModule(cfg)
-    state_dict = torch.load(cfg.training.checkpoint, map_location=device)
+    state_dict = torch.load(cfg.training.checkpoint, map_location=device, weights_only=False)
     model.load_state_dict(state_dict["state_dict"], strict=False)
     model = model.to(device)
     model = model.eval()
