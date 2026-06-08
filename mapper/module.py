@@ -32,7 +32,6 @@ class GenericModule(pl.LightningModule):
         self.save_hyperparameters(cfg)
         self.metrics_val = MetricCollection(
             self.model.metrics(), prefix="val/")
-        self.losses_val = None  # we do not know the loss keys in advance
 
     def forward(self, batch):
         return self.model(batch)
@@ -52,55 +51,40 @@ class GenericModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         pred = self(batch)
         losses = self.model.loss(pred, batch)
-        if self.losses_val is None:
-            self.losses_val = MetricCollection(
-                {k: AverageKeyMeter(k).to(self.device) for k in losses},
-                prefix="val/",
-                postfix="/loss",
-            )
         self.metrics_val(pred, batch)
-        self.losses_val.update(losses)
+        self.log_dict(self.metrics_val, on_epoch=True)
+        self.log_dict(
+            {f"val/loss/{k}": v.mean() for k, v in losses.items()},
+            prog_bar=True,
+            rank_zero_only=True,
+            on_epoch=True,
+            sync_dist=True,
+            batch_size=batch["image"].shape[0],
+        )
+        self.log(
+            "val/total/loss",
+            losses["total"].mean(),
+            prog_bar=True,
+            rank_zero_only=True,
+            on_epoch=True,
+            sync_dist=True,
+            batch_size=batch["image"].shape[0],
+        )
 
         return pred
 
     def test_step(self, batch, batch_idx):
         pred = self(batch)
         self.metrics_val(pred, batch)
+        self.log_dict(self.metrics_val, on_epoch=True)
 
         return pred
     
     def on_test_epoch_start(self):
         self.metrics_val.reset()
 
-    def on_test_epoch_end(self):
-        self.log_dict(
-            self.metrics_val.compute(),
-            on_step=False,
-            on_epoch=True,
-            sync_dist=True,
-            rank_zero_only=True,
-        )
-
     def on_validation_epoch_start(self):
-        self.metrics_val.reset()
-        self.losses_val = None
-
-    def on_validation_epoch_end(self):
-        self.log_dict(
-            self.metrics_val.compute(),
-            on_step=False,
-            on_epoch=True,
-            sync_dist=True,
-            rank_zero_only=True,
-        )
-        if self.losses_val is not None:
-            self.log_dict(
-                self.losses_val.compute(),
-                on_step=False,
-                on_epoch=True,
-                sync_dist=True,
-                rank_zero_only=True,
-            )
+        pass
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(

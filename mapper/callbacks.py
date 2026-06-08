@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 import torchvision
 import wandb
+import os
 
 
 class EvalSaveCallback(pl.Callback):
@@ -111,3 +112,59 @@ class ImageLoggerCallback(pl.Callback):
                            batch, batch_idx, mode="train")
 
             pl_module.train()
+
+
+class KeepLastKCheckpoints(pl.Callback):
+    """Keep only the last K checkpoint files in a directory (by mtime).
+
+    This callback deletes older .ckpt files in `dirpath` leaving only the
+    `keep_last_k` most recently modified files. Use this when you want to
+    preserve the most recent checkpoints rather than the best ones.
+    """
+
+    def __init__(self, dirpath: Path | str, keep_last_k: int = 4) -> None:
+        super().__init__()
+        self.dirpath = Path(dirpath)
+        self.keep_last_k = int(keep_last_k)
+
+    def on_save_checkpoint(self, trainer: pl.Trainer, pl_module: pl.LightningModule, checkpoint: Any) -> None:
+        try:
+            if not self.dirpath.exists():
+                return
+
+            files = [p for p in self.dirpath.glob("*.ckpt") if p.is_file()]
+            if len(files) <= self.keep_last_k:
+                return
+
+            files_sorted = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+            to_delete = files_sorted[self.keep_last_k:]
+            for f in to_delete:
+                try:
+                    f.unlink()
+                except Exception:
+                    # ignore deletion errors
+                    pass
+        except Exception:
+            # never raise from a callback
+            return
+
+
+class PeriodicCheckpointCallback(pl.Callback):
+    def __init__(self, dirpath: Path | str, every_n_epochs: int = 50) -> None:
+        super().__init__()
+        self.dirpath = Path(dirpath)
+        self.every_n_epochs = int(every_n_epochs)
+
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if self.every_n_epochs <= 0:
+            return
+
+        if (trainer.current_epoch + 1) % self.every_n_epochs != 0:
+            return
+
+        try:
+            self.dirpath.mkdir(parents=True, exist_ok=True)
+            filename = self.dirpath / f"epoch={trainer.current_epoch + 1}-step={trainer.global_step}.ckpt"
+            trainer.save_checkpoint(str(filename))
+        except Exception:
+            return

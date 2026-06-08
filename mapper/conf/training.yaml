@@ -25,6 +25,10 @@ training:
   checkpointing:
     dirpath: checkpoints/
     monitor: val/total/loss
-    save_top_k: 1      # guarda apenas o melhor monitorado
+    save_top_k: 4
     mode: min
-    save_last: True    # mantém também o último
+    save_last: False
+    # If set to an integer > 0, keep only the last N checkpoint files
+    # (by modification time). This is different from `save_top_k`, which
+    # keeps the best checkpoints according to the monitored metric.
+    keep_last_k: null
