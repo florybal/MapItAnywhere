@@ -1,24 +1,24 @@
 import time
+import os
 import torch
 import hydra
-import logging
-import sys
 import pytorch_lightning as pl
 from typing import Any
 
 from hydra.core.config_store import ConfigStore
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
+from omegaconf.base import ContainerMetadata
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 from pathlib import Path
 from dataclasses import dataclass
 
 from .module import GenericModule
 from .data.module import GenericDataModule
-from .callbacks import EvalSaveCallback, ImageLoggerCallback
+from .callbacks import EvalSaveCallback, ImageLoggerCallback, KeepLastKCheckpoints, PeriodicCheckpointCallback
 from .models.schema import ModelConfiguration, DINOConfiguration, ResNetConfiguration
-from .data.schema import MIADataConfiguration, KITTIDataConfiguration, NuScenesDataConfiguration, IndoorDataConfiguration
+from .data.schema import MIADataConfiguration, KITTIDataConfiguration, NuScenesDataConfiguration
 
 
 @dataclass
@@ -45,10 +45,6 @@ cs.store(group="schema/data", name="mia",
          node=MIADataConfiguration, package="data")
 cs.store(group="schema/data", name="kitti", node=KITTIDataConfiguration, package="data")
 cs.store(group="schema/data", name="nuscenes", node=NuScenesDataConfiguration, package="data")
-cs.store(group="schema/data", name="indoor", node=IndoorDataConfiguration, package="data")
-
-# Configuração principal para indoor
-cs.store(name="mapper_indoor", node=Configuration)
 
 cs.store(group="model/schema/backbone", name="dino", node=DINOConfiguration, package="model.image_encoder.backbone")
 cs.store(group="model/schema/backbone", name="resnet", node=ResNetConfiguration, package="model.image_encoder.backbone")
@@ -58,15 +54,13 @@ cs.store(group="model/schema/backbone", name="resnet", node=ResNetConfiguration,
 def train(cfg: Configuration):
     OmegaConf.resolve(cfg)
 
-    # reduce verbosity from dataset and other modules by default
-    logging.getLogger("mapper").setLevel(logging.WARNING)
-    logging.getLogger("mapper.data.indoor").setLevel(logging.WARNING)
-
-    # use a dedicated python logger for informational messages; the variable
-    # `pl_logger` or `wandb_logger` below is reserved for the PyTorch-Lightning
-    # logger object which doesn't implement .info()/.error().
-    py_logger = logging.getLogger("mapper")
-    py_logger.info("Resolved configuration:\n%s", OmegaConf.to_yaml(cfg))
+    # PyTorch 2.6 defaults to weights_only=True when Lightning resumes from a
+    # checkpoint. Older Lightning checkpoints can store OmegaConf objects in the
+    # serialized state, so allowlist the type before loading.
+    try:
+        torch.serialization.add_safe_globals([DictConfig, ContainerMetadata])
+    except Exception:
+        pass
 
     dm = GenericDataModule(cfg.data)
 
@@ -77,7 +71,6 @@ def train(cfg: Configuration):
 
     callbacks: list[pl.Callback]
 
-    pl_logger = None
     if cfg.training.eval:
         save_dir = Path(cfg.training.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -85,79 +78,113 @@ def train(cfg: Configuration):
         callbacks = [
             EvalSaveCallback(save_dir=save_dir)
         ]
+
+        logger = None
     else:
+        checkpointing_cfg = cfg.training.checkpointing
+        every_n_epochs = None
+        try:
+            every_n_epochs = checkpointing_cfg.every_n_epochs
+        except Exception:
+            every_n_epochs = None
+
+        monitor = checkpointing_cfg.monitor
+        save_top_k = checkpointing_cfg.save_top_k
+        if every_n_epochs is not None and every_n_epochs > 0:
+            # Keep ModelCheckpoint dedicated to last.ckpt so resuming does not
+            # inherit the old metric-ranked schedule from the checkpoint state.
+            monitor = None
+            save_top_k = 0
+
         callbacks = [
             ImageLoggerCallback(num_classes=cfg.training.num_classes),
             ModelCheckpoint(
-                monitor=cfg.training.checkpointing.monitor,
-                save_last=cfg.training.checkpointing.save_last,
-                save_top_k=cfg.training.checkpointing.save_top_k,
+                monitor=monitor,
+                save_last=checkpointing_cfg.save_last,
+                save_top_k=save_top_k,
             )
         ]
 
-        # prefer offline or disabled wandb if API key not present
+        if every_n_epochs is not None and every_n_epochs > 0:
+            callbacks.append(
+                PeriodicCheckpointCallback(
+                    dirpath=cfg.training.checkpointing.dirpath,
+                    every_n_epochs=every_n_epochs,
+                )
+            )
+
+        # Optionally add a callback to keep only the last K checkpoint files
+        # (useful when you want the most recent N checkpoints instead of the
+        # best ones by validation metric).
+        keep_last_k = None
         try:
-            pl_logger = WandbLogger(
-                name=exp_name_with_time,
-                id=exp_name_with_time,
-                entity="mappred-large",
-                project="map-pred-full-v3",
+            keep_last_k = cfg.training.checkpointing.keep_last_k
+        except Exception:
+            keep_last_k = None
+
+        if keep_last_k is not None:
+            callbacks.append(
+                KeepLastKCheckpoints(dirpath=cfg.training.checkpointing.dirpath, keep_last_k=keep_last_k)
             )
-            # log graph only if wandb successfully initialises
-            pl_logger.watch(model, log="all", log_freq=500)
-            py_logger.info("Using WandbLogger %s", exp_name_with_time)
+        
+        # Early stopping: prevent overfitting and stop when validation loss doesn't improve
+        if cfg.training.early_stopping.enabled:
+            callbacks.append(
+                EarlyStopping(
+                    monitor=cfg.training.early_stopping.monitor,
+                    patience=cfg.training.early_stopping.patience,
+                    min_delta=cfg.training.early_stopping.min_delta,
+                    mode=cfg.training.early_stopping.mode,
+                    verbose=True,
+                )
+            )
+
+        logger = WandbLogger(
+            name=exp_name_with_time,
+            id=exp_name_with_time,
+            entity="mappred-large",
+            project="map-pred-full-v3",
+            mode="offline",
+        )
+
+        try:
+            logger.watch(model, log="all", log_freq=500)
         except Exception as e:
-            py_logger.warning(
-                "WandbLogger unavailable (%s), continuing without it.\n"
-                "To log metrics install/configure wandb or set WANDB_MODE=offline",
-                str(e),
-            )
-            pl_logger = None
+            print(f"Warning: Could not setup WandB watch: {e}")
 
     if cfg.training.checkpoint is not None:
-        # load checkpoint and drop any parameters whose shape doesn't match the
-        # current model.  This allows fine‑tuning when the pretrained weights
-        # come from a different class count or scale bin configuration.
-        checkpoint = torch.load(cfg.training.checkpoint, weights_only=False)
-        state_dict = checkpoint['state_dict']
-        model_dict = model.state_dict()
-
-        # identify mismatched keys
-        bad_keys = []
-        for k, v in list(state_dict.items()):
-            if k in model_dict and v.shape != model_dict[k].shape:
-                bad_keys.append(k)
-                state_dict.pop(k)
-        if bad_keys:
-            py_logger = logging.getLogger("mapper")
-            py_logger.warning(
-                "Dropped %d incompatible keys from checkpoint: %s",
-                len(bad_keys), bad_keys,
-            )
-
-        model.load_state_dict(state_dict, strict=False)
+        ckpt = torch.load(cfg.training.checkpoint, weights_only=False)['state_dict']
+        # Filter out keys with mismatched shapes (e.g., final segmentation head when num_classes differ)
+        model_state = model.state_dict()
+        filtered_ckpt = {
+            k: v
+            for k, v in ckpt.items()
+            if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)
+        }
+        missing_keys, unexpected_keys = model.load_state_dict(filtered_ckpt, strict=False)
+        if missing_keys:
+            print(f"Warning: missing keys after loading checkpoint: {missing_keys}")
 
     trainer_args = OmegaConf.to_container(cfg.training.trainer)
     trainer_args['callbacks'] = callbacks
-    trainer_args['logger'] = pl_logger
+    trainer_args['logger'] = logger
 
     trainer = pl.Trainer(**trainer_args)
 
-    try:
-        if cfg.training.eval:
-            py_logger.info("Starting evaluation")
-            trainer.test(model, datamodule=dm)
+    if cfg.training.eval:
+        trainer.test(model, datamodule=dm)
+    else:
+        ckpt_path = None
+        try:
+            ckpt_path = cfg.training.resume_from_checkpoint
+        except Exception:
+            ckpt_path = None
+
+        if ckpt_path is not None:
+            os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+            trainer.fit(model, datamodule=dm, ckpt_path=ckpt_path)
         else:
-            py_logger.info("Starting training")
             trainer.fit(model, datamodule=dm)
-    except Exception as exc:
-        # catch and log any Python exception; downstream crashes (OOM, kernel panic)
-        # will still bring the machine down but we will at least have a trace
-        py_logger.error("Exception raised during trainer execution", exc_info=True)
-        # flush stdout/stderr to make sure log file is written before crash
-        sys.stdout.flush()
-        sys.stderr.flush()
-        raise
 
 
 if __name__ == "__main__":

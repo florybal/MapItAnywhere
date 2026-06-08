@@ -1,17 +1,21 @@
 services:
   mapper:
-    container_name: MIA_bev
+    container_name: MIA
     build: .
     restart: unless-stopped
     shm_size: "16g"
     ipc: host
-
     volumes:
-      - .:/workspace
-      - ./datasets:/workspace/datasets
-
+      # Mount the project workspace so edits made inside the container persist on the host
+      - ${PWD}:/home/user
+      # Map host cache to the container user's cache dir (container runs as 'user')
+      - /home/bevlog-2/.cache:/home/user/.cache
+      # Keep working dir inside the mounted project
     tty: true
     stdin_open: true
+    working_dir: /home/user
+
+    # GPU simplificado para Compose
     gpus: all
 
     environment:
@@ -20,4 +24,4 @@ services:
       - PYTHONUNBUFFERED=1
       - DEBIAN_FRONTEND=noninteractive
 
-    command: bash 
+    command: bash
